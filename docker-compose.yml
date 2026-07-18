@@ -1,0 +1,30 @@
+# Local blue/green environment — simulates ALB + two target groups + ECS
+# service with zero AWS dependency. Managed by deploy/local-deploy.sh:
+#   nginx "lb"        -> plays the ALB (prod listener :8081, test listener :9001)
+#   app-blue/app-green -> play the two ECS task sets / target groups
+services:
+  lb:
+    image: nginx:1.27-alpine
+    container_name: ecsdemo-lb
+    volumes:
+      # Directory mount (not single-file): atomic conf replace propagates
+      # reliably across the bind mount. nginx only loads *.conf files.
+      - ./local/nginx:/etc/nginx/conf.d:ro
+    ports:
+      - "8081:80" # prod listener (ALB :80)
+      - "9001:81" # test listener (ALB :9001)
+    depends_on:
+      - app-blue
+      - app-green
+
+  app-blue:
+    image: ecs-demo-app:${BLUE_TAG:-bootstrap}
+    container_name: ecsdemo-app-blue
+    environment:
+      APP_VERSION: ${BLUE_TAG:-bootstrap}
+
+  app-green:
+    image: ecs-demo-app:${GREEN_TAG:-bootstrap}
+    container_name: ecsdemo-app-green
+    environment:
+      APP_VERSION: ${GREEN_TAG:-bootstrap}

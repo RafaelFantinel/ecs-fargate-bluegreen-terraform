@@ -1,0 +1,94 @@
+name: build-test-deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: ecs-bluegreen-demo
+  ECS_CLUSTER: ecs-bluegreen-demo
+  ECS_SERVICE: ecs-bluegreen-demo
+  CODEDEPLOY_APPLICATION: ecs-bluegreen-demo
+  CODEDEPLOY_DEPLOYMENT_GROUP: ecs-bluegreen-demo
+  CONTAINER_NAME: app
+
+permissions:
+  id-token: write # OIDC federation with AWS — no static keys
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run tests
+        run: mvn -B -f app/pom.xml verify
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency: production-deploy
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker build -t "$IMAGE" app/
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Render task definition template
+        env:
+          AWS_ACCOUNT_ID: ${{ steps.ecr.outputs.registry }}
+        run: |
+          export AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID%%.*}"
+          export AWS_REGION="${{ env.AWS_REGION }}"
+          export APP_VERSION="${{ github.sha }}"
+          envsubst < deploy/taskdef.json > taskdef.rendered.json
+
+      - name: Set image in task definition
+        id: taskdef
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: taskdef.rendered.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.image.outputs.image }}
+
+      - name: Deploy via CodeDeploy blue/green
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.taskdef.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          codedeploy-appspec: deploy/appspec.yaml
+          codedeploy-application: ${{ env.CODEDEPLOY_APPLICATION }}
+          codedeploy-deployment-group: ${{ env.CODEDEPLOY_DEPLOYMENT_GROUP }}
+          wait-for-service-stability: true

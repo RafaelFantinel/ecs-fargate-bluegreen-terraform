@@ -1,0 +1,12 @@
+# CodeDeploy AppSpec for ECS blue/green.
+# <TASK_DEFINITION> is replaced by amazon-ecs-deploy-task-definition with the
+# ARN of the task definition revision registered during the deploy.
+version: 0.0
+Resources:
+  - TargetService:
+      Type: AWS::ECS::Service
+      Properties:
+        TaskDefinition: <TASK_DEFINITION>
+        LoadBalancerInfo:
+          ContainerName: "app"
+          ContainerPort: 8080
